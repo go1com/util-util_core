@@ -2,16 +2,21 @@
 
 namespace go1\util\portal;
 
+use Doctrine\Common\Cache\CacheProvider;
 use Doctrine\DBAL\Connection;
 use Exception;
 use go1\clients\MqClient;
 use go1\clients\UserClient;
 use go1\core\util\client\federation_api\v1\schema\object\User;
 use go1\core\util\client\federation_api\v1\UserMapper;
+use go1\domain_users\clients\portal\lib\Model\Portal;
 use go1\util\collection\PortalCollectionConfiguration;
 use go1\util\DB;
 use go1\util\edge\EdgeTypes;
 use go1\util\queue\Queue;
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\ServerException;
 use stdClass;
 use function array_map;
 
@@ -59,36 +64,81 @@ class PortalHelper
     const DEFAULT_APP_PREFIX = 'p/#';
     const DEFAULT_WEB_APP    = 'webapp/#';
 
-    public static function load(Connection $go1, $nameOrId, $columns = '*', bool $aliasSupport = false, bool $includePortalData = false): ?stdClass
+    private Client         $httpClient;
+    private string         $portalServiceUrl;
+    private ?CacheProvider $cacheProvider;
+    private ?array         $retryPolicy;
+
+    public function __construct(Client $httpClient, string $portalServiceUrl, CacheProvider $cacheProvider = null)
     {
-        $column = is_numeric($nameOrId) ? 'id' : 'title';
-        $portal = "SELECT {$columns} FROM gc_instance WHERE {$column} = ? ";
-        $portal = $go1->executeQuery($portal, [$nameOrId])->fetch(DB::OBJ);
+        $this->httpClient = $httpClient;
+        $this->portalServiceUrl = $portalServiceUrl;
+        $this->cacheProvider = $cacheProvider;
+    }
 
-        if ($portal) {
-            $portal->data = isset($portal->data) ? (object) json_decode($portal->data) : new stdClass();
+    public function load($nameOrId, $cache = true, $retryOnFailure = true): ?Portal
+    {
+        try {
+            // Fetch portal from in-memory cache
+            $portals = &DB::cache(__METHOD__, []);
+            if ($cache && isset($portals[$nameOrId])) {
+                return $portals[$nameOrId];
+            }
 
-            if ($includePortalData) {
-                $portal->data->portal_data = self::loadPortalDataById($go1, (int) $portal->id);
+            // Fetch portal from redis cache
+            $cacheId = "portal_helper:portal:$nameOrId";
+            if (!empty($this->cacheProvider) && $cache) {
+                try {
+                    $portal = $this->cache->fetch($cacheId);
+                } catch (\Exception $e) {
+                    // Ignore if cache server down
+                }
+            }
+
+            $res = $this->httpClient->get("$this->portalServiceUrl/$nameOrId");
+            $json = json_decode($res->getBody()->getContents(), true);
+            if (empty($json)) {
+                return null;
+            }
+
+            $portal = new Portal($json);
+            // Add portal into in-memory
+            $portals[$portal->id] = $portals[$portal->title] = $portal;
+
+            // Add portal into redis cache
+            try {
+                if (!empty($this->cacheProvider)) {
+                    $portal = $this->cache->saveMultiple([
+                        "portal_helper:portal:$portal->id"    => $portal,
+                        "portal_helper:portal:$portal->title" => $portal,
+                    ]);
+                }
+            } catch (\Exception $e) {
+                // Ignore if cache server down
             }
 
             return $portal;
-        }
-
-        if ($aliasSupport && !is_numeric($nameOrId)) {
-            $domainId = 'SELECT id FROM gc_domain WHERE title = ?';
-            $domainId = $go1->fetchColumn($domainId, [$nameOrId]);
-            if ($domainId) {
-                $portalName = 'SELECT source_id FROM gc_ro WHERE type = ? AND target_id = ?';
-                $portalName = $go1->fetchColumn($portalName, [EdgeTypes::HAS_DOMAIN, $domainId]);
-
-                return $portalName ? self::load($go1, $portalName) : null;
+        } catch (RequestException $e) {
+            return null;
+        } catch (ServerException $e) {
+            if ($retryOnFailure) {
+                return $this->load($nameOrId, false, false);
             }
+            throw $e;
         }
-
-        return null;
     }
 
+    /**
+     * @deprecated
+     * This method update the portal data therefore it should be used by portal service only
+     *
+     * @param Connection $db
+     * @param MqClient $queue
+     * @param string $version
+     * @param $portalId
+     * @return void|null
+     * @throws \Doctrine\DBAL\Exception
+     */
     public static function updateVersion(Connection $db, MqClient $queue, string $version, $portalId)
     {
         if (!$original = self::load($db, $portalId)) {
@@ -101,16 +151,24 @@ class PortalHelper
         $queue->publish($portal, Queue::PORTAL_UPDATE);
     }
 
-    public static function idFromName(Connection $db, string $instance)
+    public function idFromName(string $portalName): ?int
     {
-        return $db->fetchColumn('SELECT id FROM gc_instance WHERE title = ?', [$instance]);
+        $portal = $this->load($portalName);
+        return $portal ? $portal->getId() : null;
     }
 
-    public static function nameFromId(Connection $db, int $id)
+    public function nameFromId(int $id): ?string
     {
-        return $db->fetchColumn('SELECT title FROM gc_instance WHERE id = ?', [$id]);
+        $portal = $this->load($portalName);
+        return $portal ? $portal->getTitle() : null;
     }
 
+    /**
+     * @deprecated It should be used by portal service only
+     *
+     * @param stdClass $portal
+     * @return void
+     */
     public static function parseConfig(stdClass &$portal)
     {
         if (!isset($portal->configuration)) {
@@ -138,6 +196,14 @@ class PortalHelper
         }
     }
 
+    /**
+     * @deprecated Portal and LO service is no longer shares the same database. Therefore it is likely impossible to joining two tables.
+     *
+     * @param Connection $db
+     * @param int $loId
+     * @return array|false|mixed
+     * @throws \Doctrine\DBAL\Exception
+     */
     public static function loadFromLoId(Connection $db, int $loId)
     {
         $portal = &DB::cache(__METHOD__, []);
@@ -153,6 +219,14 @@ class PortalHelper
             [$loId])->fetch(DB::OBJ);
     }
 
+    /**
+     * @deprecated Portal and LO service is no longer shares the same database. Therefore it is likely impossible to joining two tables.
+     *
+     * @param Connection $db
+     * @param int $loId
+     * @return false|mixed
+     * @throws \Doctrine\DBAL\Exception
+     */
     public static function titleFromLoId(Connection $db, int $loId)
     {
         return $db->executeQuery(
@@ -163,11 +237,10 @@ class PortalHelper
         )->fetchColumn();
     }
 
-    public static function logo(stdClass $portal)
+    public static function logo(Portal $portal): ?string
     {
-        self::parseConfig($portal);
-
-        $logo = $portal->data->files->logo ?? ($portal->data->configuration->logo ?? ($portal->data->logo ?? ''));
+        $conf = $portal->getConfiguration();
+        $logo = $conf ? $conf->getLogo() : null;
         if (!$logo) {
             return $logo;
         }
@@ -175,6 +248,14 @@ class PortalHelper
         return (filter_var($logo, FILTER_VALIDATE_URL) === false) ? ('https:' . $logo) : $logo;
     }
 
+    /**
+     * @deprecated This method should be used by user service only. If you want to use it please reach out to IAM team and we can discuss more about this use case.
+     *
+     * @param Connection $db
+     * @param string $portalName
+     * @return array|false
+     * @throws \Doctrine\DBAL\Exception
+     */
     public static function roles(Connection $db, string $portalName)
     {
         $roles = $db->executeQuery('SELECT id, name FROM gc_role WHERE instance = ?', [$portalName])->fetchAll(DB::OBJ);
@@ -186,15 +267,16 @@ class PortalHelper
      * Static method to get timezone of portal
      * portal predefined properties GET /portal/properties/timezones endpoint
      *
-     * @param stdClass    $portal
+     * @param Portal    $portal
      * @param string|null $defaultTimezone
      * @return string
      */
-    public static function timezone(stdClass $portal, string $defaultTimezone = null): string
+    public static function timezone(Portal $portal, string $defaultTimezone = null): ?string
     {
-        self::parseConfig($portal);
+        $conf = $portal->getConfiguration();
+        $timezone = $conf ? $conf->getTimezone() : null;
 
-        return $portal->configuration->timezone ?? ($defaultTimezone ?: self::TIMEZONE_DEFAULT);
+        return $timezone ?? ($defaultTimezone ?: self::TIMEZONE_DEFAULT);
     }
 
     public static function portalAdminIds(UserClient $userClient, string $portalName): array
@@ -218,27 +300,37 @@ class PortalHelper
         return $admins;
     }
 
-    public static function language(stdClass $portal)
+    public static function language(Portal $portal): ?string
     {
-        self::parseConfig($portal);
+        $conf = $portal->getConfiguration();
+        $language = $conf ? $conf->getLanguage() : null;
 
-        return $portal->configuration->{self::LANGUAGE} ?? self::LANGUAGE_DEFAULT;
+        return $language ?? self::LANGUAGE_DEFAULT;
     }
 
-    public static function locale(stdClass $portal)
+    public static function locale(Portal $portal): ?string
     {
-        self::parseConfig($portal);
+        $conf = $portal->getConfiguration();
+        $locale = $conf ? $conf->getLocale() : null;
 
-        return $portal->configuration->{self::LOCALE} ?? self::LOCALE_DEFAULT;
+        return $locale ?? self::LOCALE_DEFAULT;
     }
 
-    public static function collections(stdClass $portal): array
+    public static function collections(Portal $portal): ?array
     {
-        self::parseConfig($portal);
+        $conf = $portal->getConfiguration();
+        $collections = $conf ? $conf->getCollections() : null;
 
-        return $portal->configuration->{self::COLLECTIONS} ?? self::COLLECTIONS_DEFAULT;
+        return $collections ?? self::COLLECTIONS_DEFAULT;
     }
 
+    /**
+     * @deprecated This method should be used by portal service only. Please use PortalHelper::load to get portal data.
+     * @param Connection $db
+     * @param int $portalId
+     * @return array|false|mixed
+     * @throws \Doctrine\DBAL\Exception
+     */
     public static function loadPortalDataById(Connection $db, int $portalId)
     {
         return $db->executeQuery('SELECT * FROM portal_data WHERE id = ?', [$portalId])->fetch(DB::OBJ);

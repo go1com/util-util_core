@@ -20,7 +20,8 @@
     "ramsey/uuid": "^3.4",
     "symfony/http-foundation": "^4.0 | ^3.4",
     "pimple/pimple": "^v3.0.0",
-    "psr/log": "~1.0"
+    "psr/log": "~1.0",
+    "domain-users/php-client-generate-sdk": "^0.0.1"
   },
   "require-dev": {
     "ezyang/htmlpurifier": "^4.12"
@@ -38,6 +39,10 @@
     "0": {
       "type": "vcs",
       "url": "https://code.go1.com.au/mirror/go1-core/util.git"
+    },
+    "1": {
+      "type": "vcs",
+      "url": "git@code.go1.com.au:domain-users/php-client-generate-sdk.git"
     }
   },
   "config": {
