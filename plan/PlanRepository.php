@@ -276,7 +276,9 @@ class PlanRepository
 
         if ($original) {
             $original = Plan::create($original);
-            if (false === $plan->due) {
+            // the plan could be created by application code somewhere else, without a due date
+            // so we need to sync it with the original that was loaded from the db
+            if (is_null($plan->due)) {
                 $plan->due = $original->due;
             }
             $this->update($original, $plan, $notify, $embedded, $queueContext);
