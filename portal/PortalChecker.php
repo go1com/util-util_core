@@ -36,6 +36,9 @@ class PortalChecker
         return !empty($portal->configuration->primary_domain) ? $portal->configuration->primary_domain : $portal->title;
     }
 
+    /**
+     * @deprecated Use go1\clients\portal\Portal::siteName()
+     */
     public function getSiteName($portal)
     {
         PortalHelper::parseConfig($portal);
