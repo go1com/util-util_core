@@ -18,7 +18,7 @@ use go1\util\queue\Queue;
 use Ramsey\Uuid\Uuid;
 use stdClass;
 
-class PlanRepository
+class PlanRepository implements DeferredMessagesInterface
 {
     private const DATE_MYSQL = 'Y-m-d H:i:s';
     private Connection              $db;
@@ -26,6 +26,7 @@ class PlanRepository
     private PlanCreateEventEmbedder $planCreateEventEmbedder;
     private PlanUpdateEventEmbedder $planUpdateEventEmbedder;
     private PlanDeleteEventEmbedder $planDeleteEventEmbedder;
+    private array $deferredMessages = [];
 
     public function __construct(
         Connection $db,
@@ -202,17 +203,23 @@ class PlanRepository
         $plan->id = (int) $this->db->lastInsertId('gc_plan');
         $plan->notify = $notify ?: ($queueContext['notify'] ?? false);
 
-        if (!$apiUpliftV3) {
-            $queueContext['notify'] = $plan->notify;
-            $queueContext['sessionId'] = Uuid::uuid4()->toString();
+        $queueContext['notify'] = $plan->notify;
+        $queueContext['sessionId'] = Uuid::uuid4()->toString();
+        $payload = $plan->jsonSerialize();
+        $payload['embedded'] = $embedded + $this->planCreateEventEmbedder->embedded($plan);
 
-            $payload = $plan->jsonSerialize();
-            $payload['embedded'] = $embedded + $this->planCreateEventEmbedder->embedded($plan);
+        if (!$apiUpliftV3) {
             if ($isBatch) {
                 $this->queue->batchAdd($payload, Queue::PLAN_CREATE, $queueContext);
             } else {
                 $this->queue->publish($payload, Queue::PLAN_CREATE, $queueContext);
             }
+        } else {
+            $this->deferredMessages[] = [
+                'payload' => $payload,
+                'routing_key' => Queue::PLAN_CREATE,
+                'context' => $queueContext,
+            ];
         }
 
         return $plan->id;
@@ -270,7 +277,7 @@ class PlanRepository
         $this->queue->publish($payload, Queue::PLAN_DELETE);
     }
 
-    public function merge(Plan $plan, bool $notify = false, array $queueContext = [], array $embedded = []): int
+    public function merge(Plan $plan, bool $notify = false, array $queueContext = [], array $embedded = [], bool $apiUpliftV3 = false): int
     {
         $qb = $this->db->createQueryBuilder();
         $original = $qb
@@ -300,7 +307,7 @@ class PlanRepository
             $this->update($original, $plan, $notify, $embedded, $queueContext);
             $planId = $original->id;
         } else {
-            $planId = $this->create($plan, false, $notify, $queueContext, $embedded);
+            $planId = $this->create($plan, $apiUpliftV3, $notify, $queueContext, $embedded);
         }
 
         return $planId;
@@ -369,5 +376,15 @@ class PlanRepository
             ->setParameter(':userId', $userId, DB::INTEGER)
             ->execute()
             ->fetchAll(DB::OBJ);
+    }
+
+    public function getDeferredMessages(): array
+    {
+        return $this->deferredMessages;
+    }
+
+    public function clearDeferredMessages(): void
+    {
+        $this->deferredMessages = [];
     }
 }

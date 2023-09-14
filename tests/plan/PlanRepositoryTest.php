@@ -62,17 +62,18 @@ class PlanRepositoryTest extends UtilCoreTestCase
     public function planNotifyStatus()
     {
         return [
-            [false, ['notify' => true], true],
-            [true, ['notify' => false], true],
-            [false, [], false],
-            [true, [], true],
+            [false, ['notify' => true], true, false],
+            [true, ['notify' => false], true, false],
+            [false, [], false, false],
+            [true, [], true, false],
+            [true, [], true, true],
         ];
     }
 
     /**
      * @dataProvider planNotifyStatus
      */
-    public function testCreatePlanNotify($notifyStatus, $dataContext, $expectedNotify)
+    public function testCreatePlanNotify($notifyStatus, $dataContext, $expectedNotify, $apiUpliftV3)
     {
         $plan = Plan::create((object) [
             'instance_id' => $this->portalId,
@@ -84,10 +85,14 @@ class PlanRepositoryTest extends UtilCoreTestCase
             'status'      => PlanStatuses::ASSIGNED,
         ]);
         $this->rPlan->create($plan, false, $notifyStatus, $dataContext);
-        $this->assertArrayHasKey('embedded', $this->queueMessages[Queue::PLAN_CREATE][0]);
-        $msg = (object) $this->queueMessages[Queue::PLAN_CREATE][0];
-        $this->assertEquals($msg->notify, $expectedNotify);
-        $this->assertNotEmpty($msg->_context['sessionId']);
+        if ($apiUpliftV3) {
+            $this->assertEquals([], $this->rPlan->getDeferredMessages());
+        } else {
+            $this->assertArrayHasKey('embedded', $this->queueMessages[Queue::PLAN_CREATE][0]);
+            $msg = (object) $this->queueMessages[Queue::PLAN_CREATE][0];
+            $this->assertEquals($msg->notify, $expectedNotify);
+            $this->assertNotEmpty($msg->_context['sessionId']);
+        }
     }
 
     public function testUpdate()
