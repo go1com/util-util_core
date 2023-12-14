@@ -16,7 +16,7 @@ variables:
   XDEBUG_MODE: coverage
 
 test:phpunit:
-  image: go1com/ci-php:php7
+  image: go1com/ci-php:php8
   stage: test
   script:
     - composer config gitlab-token.code.go1.com.au $GITLAB_TOKEN
