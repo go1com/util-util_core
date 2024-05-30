@@ -11,7 +11,7 @@ class PortalCollectionConfiguration
     public const SHARE        = 'share';
     public const CUSTOM_SHARE = 'custom_share';
     public const CONTENT_LOADER = 'content_loader';
-    public const UNADDED_TO_LIBRARY = 'unadded_to_library';
+    public const NOT_ADDED_TO_LIBRARY = 'not_added_to_library';
 
     public const ALL = [
         self::FREE,
@@ -21,6 +21,6 @@ class PortalCollectionConfiguration
         self::SHARE,
         self::CUSTOM_SHARE,
         self::CONTENT_LOADER,
-        self::UNADDED_TO_LIBRARY
+        self::NOT_ADDED_TO_LIBRARY
     ];
 }
