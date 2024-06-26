@@ -53,6 +53,7 @@ class PortalSchema
             $data->addColumn('cancel_expiry_date', 'integer', ['unsigned' => true, 'notnull' => false]);
             $data->addColumn('partner_portal_id', 'integer', ['unsigned' => true, 'notnull' => false]);
             $data->addColumn('referrer', 'string', ['notnull' => false]);
+            $data->addColumn('customer_name', 'string', ['notnull' => false]);
 
             $data->setPrimaryKey(['id']);
             $data->addIndex(['state']);
@@ -69,6 +70,7 @@ class PortalSchema
             $data->addIndex(['cancel_expiry_date']);
             $data->addIndex(['partner_portal_id']);
             $data->addIndex(['referrer']);
+            $data->addIndex(['customer_name']);
         }
 
         if (!$schema->hasTable('portal_stream')) {
@@ -92,6 +94,7 @@ class PortalSchema
         self::update03($schema);
         self::update04($schema);
         self::update05($schema);
+        self::update06($schema);
     }
 
     public static function installPortalConf(Schema $schema): void
@@ -173,6 +176,16 @@ class PortalSchema
             $portalData = $schema->getTable('portal_stream');
             if (!$portalData->hasColumn('actor_id')) {
                 $portalData->addColumn('actor_id', TYPE::INTEGER, ['unsigned' => true, 'notnull' => false]);
+            }
+        }
+    }
+
+    public static function update06(Schema $schema): void
+    {
+        if ($schema->hasTable('portal_data')) {
+            $portalData = $schema->getTable('portal_data');
+            if (!$portalData->hasColumn('customer_name')) {
+                $portalData->addColumn('customer_name', 'string', ['notnull' => false]);
             }
         }
     }
